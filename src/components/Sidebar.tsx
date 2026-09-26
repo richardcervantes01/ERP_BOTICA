@@ -11,8 +11,11 @@ import {
   RotateCcw,
   Shield,
   Store,
-  LogOut,
-  Building2
+  Sliders,
+  TrendingUp,
+  Award,
+  FileCode2,
+  ShieldCheck
 } from 'lucide-react';
 import { usePharmacy, AppView } from '../context/PharmacyContext';
 
@@ -27,33 +30,40 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenLoginModal }) => {
     metrics,
     resetDatabase,
     currentUser,
-    currentTenant,
-    logout
+    currentTenant
   } = usePharmacy();
 
   const isSuperAdmin = currentUser?.role === 'superadmin';
   const isTenantAdmin = currentUser?.role === 'tenant_admin';
+  const isCashier = currentUser?.role === 'cashier';
 
-  const baseNavItems: { id: AppView; label: string; icon: any; badge: React.ReactNode; roles?: string[] }[] = [
-    ...(isSuperAdmin
-      ? [
-          {
-            id: 'saas_admin' as const,
-            label: 'Panel Maestro SaaS',
-            icon: Shield,
-            badge: (
-              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-600 text-white">
-                Super Admin
-              </span>
-            )
-          }
-        ]
-      : []),
+  // Allowed modules for cashier
+  const cashierModules = currentUser?.assignedModules || ['pos'];
+
+  const allNavItems: {
+    id: AppView;
+    label: string;
+    icon: any;
+    badge: React.ReactNode;
+    show: boolean;
+  }[] = [
+    {
+      id: 'saas_admin',
+      label: 'Panel Maestro SaaS',
+      icon: Shield,
+      badge: (
+        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-600 text-white">
+          Super Admin
+        </span>
+      ),
+      show: isSuperAdmin
+    },
     {
       id: 'pos',
       label: 'Punto de Venta (POS)',
       icon: ShoppingCart,
-      badge: null
+      badge: null,
+      show: isSuperAdmin || isTenantAdmin || (isCashier && cashierModules.includes('pos'))
     },
     {
       id: 'vencimientos',
@@ -64,7 +74,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenLoginModal }) => {
           <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white animate-pulse">
             {metrics.vencidosCount + metrics.criticosCount}
           </span>
-        ) : null
+        ) : null,
+      show: isSuperAdmin || isTenantAdmin || (isCashier && cashierModules.includes('vencimientos'))
     },
     {
       id: 'inventario',
@@ -75,52 +86,87 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenLoginModal }) => {
           <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300">
             {metrics.stockBajoCount}
           </span>
-        ) : null
+        ) : null,
+      show: isSuperAdmin || isTenantAdmin || (isCashier && cashierModules.includes('inventario'))
     },
     {
       id: 'ventas',
       label: 'Historial de Ventas',
       icon: Receipt,
-      badge: null
+      badge: null,
+      show: isSuperAdmin || isTenantAdmin
     },
     {
       id: 'dashboard',
       label: 'Dashboard & Resumen',
       icon: LayoutDashboard,
-      badge: null
+      badge: null,
+      show: isSuperAdmin || isTenantAdmin
+    },
+    {
+      id: 'productividad',
+      label: 'Productividad de Cajeros',
+      icon: TrendingUp,
+      badge: (
+        <span className="text-[10px] font-bold px-1 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
+          Rankings
+        </span>
+      ),
+      show: isSuperAdmin || isTenantAdmin
+    },
+    {
+      id: 'cajeros_permisos',
+      label: 'Gestión de Cajeros',
+      icon: Sliders,
+      badge: null,
+      show: isSuperAdmin || isTenantAdmin
     },
     {
       id: 'clientes',
-      label: 'Clientes',
+      label: 'Clientes & Pacientes',
       icon: Users,
-      badge: null
+      badge: null,
+      show: isSuperAdmin || isTenantAdmin || (isCashier && cashierModules.includes('clientes'))
     },
     {
       id: 'caja',
-      label: 'Control de Caja',
+      label: 'Control y Arqueo de Caja',
       icon: Wallet,
-      badge: null
+      badge: null,
+      show: isSuperAdmin || isTenantAdmin // Cajero NEVER sees cash drawer arqueo
     },
-    ...(!isSuperAdmin && isTenantAdmin
-      ? [
-          {
-            id: 'configuracion' as const,
-            label: 'Personalización Botica',
-            icon: Store,
-            badge: null
-          }
-        ]
-      : isSuperAdmin
-      ? [
-          {
-            id: 'configuracion' as const,
-            label: 'Personalizar Botica',
-            icon: Store,
-            badge: null
-          }
-        ]
-      : [])
+    {
+      id: 'digemid',
+      label: 'Regulatorio DIGEMID / MINSA',
+      icon: ShieldCheck,
+      badge: (
+        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/30 text-emerald-300">
+          OPPF & FEFO
+        </span>
+      ),
+      show: isSuperAdmin || isTenantAdmin
+    },
+    {
+      id: 'sunat_api',
+      label: 'Facturación SUNAT (API)',
+      icon: FileCode2,
+      badge: (
+        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300">
+          UBL 2.1
+        </span>
+      ),
+      show: isSuperAdmin || isTenantAdmin // Cajero NEVER manages fiscal API
+    },
+    {
+      id: 'configuracion',
+      label: 'Personalización Botica',
+      icon: Store,
+      badge: null,
+      show: isSuperAdmin || isTenantAdmin // Cajero NEVER customizes botica
+    }
   ];
+
+  const visibleNavItems = allNavItems.filter(item => item.show);
 
   return (
     <aside className="w-64 bg-emerald-950 text-white flex flex-col justify-between shrink-0 select-none border-r border-emerald-900/50">
@@ -147,7 +193,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenLoginModal }) => {
               className={`w-2 h-2 rounded-full ${
                 isSuperAdmin
                   ? 'bg-purple-400 animate-ping'
-                  : 'bg-emerald-400'
+                  : isTenantAdmin
+                  ? 'bg-emerald-400'
+                  : 'bg-blue-400'
               }`}
             />
             <div className="truncate">
@@ -158,8 +206,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenLoginModal }) => {
                 {isSuperAdmin
                   ? 'Super Admin (Tú)'
                   : isTenantAdmin
-                  ? 'Dueño de Botica'
-                  : 'Cajero / Mostrador'}
+                  ? 'Admin de Botica'
+                  : 'Cajero Mostrador'}
               </p>
             </div>
           </div>
@@ -175,7 +223,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenLoginModal }) => {
 
         {/* Navigation */}
         <nav className="p-3 space-y-1 overflow-y-auto flex-1">
-          {baseNavItems.map(item => {
+          {visibleNavItems.map(item => {
             const Icon = item.icon;
             const isActive = activeView === item.id;
             return (
@@ -203,20 +251,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ onOpenLoginModal }) => {
       <div className="p-3 border-t border-emerald-900/70 bg-emerald-950/60 space-y-2 shrink-0">
         <div className="flex items-center justify-between text-[11px] text-emerald-400 px-1">
           <span>Licencia: {currentTenant.plan.toUpperCase()}</span>
-          <button
-            onClick={() => {
-              if (window.confirm('¿Deseas restaurar la base de datos de prueba?')) {
-                resetDatabase();
-              }
-            }}
-            title="Restaurar datos de prueba"
-            className="text-emerald-400/80 hover:text-white flex items-center gap-1 hover:underline cursor-pointer"
-          >
-            <RotateCcw className="w-3 h-3" /> Reiniciar
-          </button>
+          {isSuperAdmin && (
+            <button
+              onClick={() => {
+                if (window.confirm('¿Deseas restaurar la base de datos de prueba?')) {
+                  resetDatabase();
+                }
+              }}
+              title="Restaurar datos de prueba"
+              className="text-emerald-400/80 hover:text-white flex items-center gap-1 hover:underline cursor-pointer"
+            >
+              <RotateCcw className="w-3 h-3" /> Reiniciar
+            </button>
+          )}
         </div>
         <p className="text-[10px] text-emerald-500/80 text-center font-mono">
-          DIGEMID / FEFO Standard • v2.1 SaaS
+          DIGEMID / FEFO Standard • v2.2 Multi-Rol
         </p>
       </div>
     </aside>

@@ -1,18 +1,39 @@
 import React from 'react';
 import { usePharmacy } from '../context/PharmacyContext';
-import { AlertTriangle, Clock, Wallet, Shield, Store, UserCircle } from 'lucide-react';
+import { AlertTriangle, Clock, Wallet, Shield, Store, UserCircle, FileCode2, Lock } from 'lucide-react';
 import { formatCurrency } from '../utils/dateUtils';
 
 interface HeaderProps {
   onOpenCashModal: () => void;
   onOpenLoginModal: () => void;
+  onOpenCashierCloseShift?: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onOpenCashModal, onOpenLoginModal }) => {
+export const Header: React.FC<HeaderProps> = ({ onOpenCashModal, onOpenLoginModal, onOpenCashierCloseShift }) => {
   const { activeView, setActiveView, metrics, cashRegister, sales, currentUser, currentTenant } = usePharmacy();
 
   const getTitle = () => {
     switch (activeView) {
+      case 'sunat_api':
+        return {
+          title: 'Facturación Electrónica SUNAT (API & Emisión)',
+          subtitle: `Emisión UBL 2.1, certificado digital y playground REST para ${currentTenant.nombreBotica}`
+        };
+      case 'digemid':
+        return {
+          title: 'Centro de Cumplimiento Regulatorio Farmacéutico (DIGEMID / MINSA)',
+          subtitle: `Auditoría OPPF, trazabilidad FEFO, fraccionamiento multinivel y libro de fiscalizados de ${currentTenant.nombreBotica}`
+        };
+      case 'productividad':
+        return {
+          title: 'Productividad & Rendimiento de Cajeros',
+          subtitle: `Ranking de ventas, volumen despachado y tickets emitidos en ${currentTenant.nombreBotica}`
+        };
+      case 'cajeros_permisos':
+        return {
+          title: 'Gestión de Cajeros & Asignación de Roles',
+          subtitle: 'Configure qué módulos puede ver y operar cada cajero en su mostrador'
+        };
       case 'saas_admin':
         return {
           title: 'Panel Maestro SaaS (Super Admin)',
@@ -112,8 +133,8 @@ export const Header: React.FC<HeaderProps> = ({ onOpenCashModal, onOpenLoginModa
           </button>
         )}
 
-        {/* Cash Drawer Status (if in botica context) */}
-        {!isSuperAdmin && (
+        {/* Cash Drawer Status (Only Botica Admin can view/edit cash drawer) */}
+        {currentUser?.role === 'tenant_admin' && (
           <button
             onClick={onOpenCashModal}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition cursor-pointer ${
@@ -139,6 +160,18 @@ export const Header: React.FC<HeaderProps> = ({ onOpenCashModal, onOpenLoginModa
                 {formatCurrency(currentCashInDrawer)}
               </span>
             )}
+          </button>
+        )}
+
+        {/* Cashier Shift Close Trigger */}
+        {currentUser?.role === 'cashier' && onOpenCashierCloseShift && (
+          <button
+            onClick={onOpenCashierCloseShift}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-xs transition cursor-pointer"
+            title="Cerrar turno de caja y entregar dinero"
+          >
+            <Lock className="w-3.5 h-3.5" />
+            <span>Cerrar Mi Turno</span>
           </button>
         )}
 

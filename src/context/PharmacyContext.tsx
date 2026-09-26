@@ -9,7 +9,14 @@ import {
   TipoComprobante,
   MetodoPago,
   User,
-  TenantSettings
+  TenantSettings,
+  Liquidacion,
+  CierreTurnoCajero,
+  ArqueoGeneralDia,
+  UnidadDispensacion,
+  RecetaMedicaControlada,
+  LibroOficialControladosEntry,
+  ProductBatch
 } from '../types/pharmacy';
 import {
   INITIAL_PRODUCTS,
@@ -18,9 +25,21 @@ import {
   INITIAL_CASH_REGISTER,
   INITIAL_DISPOSAL_ACTS,
   INITIAL_TENANTS,
-  INITIAL_USERS
+  INITIAL_USERS,
+  INITIAL_LIQUIDACIONES,
+  INITIAL_CIERRES_TURNO,
+  INITIAL_ARQUEOS_DIARIOS,
+  INITIAL_LIBRO_CONTROLADOS
 } from '../data/initialData';
 import { getExpirationStatus } from '../utils/dateUtils';
+import {
+  generateMockHashCpe,
+  generateSunatQrString,
+  generateSunatXmlUbl21,
+  generateSunatCdrXml
+} from '../services/sunatApi';
+import { allocateFefoStock, isBatchExpired, getPreferredFefoBatch } from '../services/fefoEngine';
+import { calculateMinimalUnits, getPriceForUnit } from '../services/fractioningEngine';
 
 export type AppView =
   | 'pos'
@@ -31,7 +50,14 @@ export type AppView =
   | 'clientes'
   | 'caja'
   | 'configuracion'
-  | 'saas_admin';
+  | 'productividad'
+  | 'cajeros_permisos'
+  | 'saas_admin'
+  | 'saas_usuarios'
+  | 'saas_ventas'
+  | 'saas_liquidaciones'
+  | 'sunat_api'
+  | 'digemid'; // Centro de Cumplimiento Regulatorio DIGEMID / MINSA
 
 interface PharmacyContextType {
   // Auth & Multi-tenant
@@ -39,6 +65,7 @@ interface PharmacyContextType {
   users: User[];
   tenants: TenantSettings[];
   currentTenant: TenantSettings;
+  liquidaciones: Liquidacion[];
   login: (email: string, pass: string) => { success: boolean; message?: string };
   logout: () => void;
   updateCurrentTenant: (updates: Partial<TenantSettings>) => void;
@@ -48,6 +75,19 @@ interface PharmacyContextType {
   ) => void;
   updateTenantLicense: (tenantId: string, updates: Partial<TenantSettings>) => void;
   switchActiveTenant: (tenantId: string) => void;
+
+  // Global user management
+  createUser: (userData: Omit<User, 'id'>) => void;
+  updateUser: (userId: string, updates: Partial<User>) => void;
+  deleteUser: (userId: string) => void;
+  updateUserModules: (userId: string, modules: string[]) => void;
+  updateUserAssignedModules: (userId: string, modules: string[]) => void;
+  toggleUserStatus: (userId: string) => void;
+
+  // Liquidaciones
+  addLiquidacion: (data: Omit<Liquidacion, 'id'>) => void;
+  updateLiquidacionStatus: (id: string, status: 'pagado' | 'pendiente') => void;
+  registrarPagoLiquidacion: (liquidacionId: string) => void;
 
   // Navigation
   activeView: AppView;
@@ -60,23 +100,44 @@ interface PharmacyContextType {
   cart: CartItem[];
   cashRegister: CashRegister;
   disposalActs: DisposalAct[];
+  libroControlados: LibroOficialControladosEntry[];
+  exportarLibroControladosCsv: () => string;
 
-  // Cart operations
-  addToCart: (product: Product, quantity?: number) => { success: boolean; message?: string };
-  updateCartQuantity: (productId: string, quantity: number) => void;
+  // Turnos & Arqueos (Cajero vs Administrador)
+  cierresTurno: CierreTurnoCajero[];
+  arqueosDiarios: ArqueoGeneralDia[];
+  registrarCierreTurnoCajero: (cierre: Omit<CierreTurnoCajero, 'id'>) => CierreTurnoCajero;
+  auditarCierreTurno: (cierreId: string, updates: Partial<CierreTurnoCajero>) => void;
+  generarArqueoGeneralDia: (arqueo: Omit<ArqueoGeneralDia, 'id' | 'tenantId' | 'fecha' | 'responsableAdmin' | 'turnosAuditados'> & { observaciones?: string }) => ArqueoGeneralDia;
+
+  // SUNAT
+  reintentarEnvioSunat: (saleId: string) => void;
+
+  // Cart operations (con soporte FEFO y Fraccionamiento multinivel)
+  addToCart: (
+    product: Product,
+    quantity?: number,
+    unidad?: UnidadDispensacion
+  ) => { success: boolean; message?: string };
+  updateCartQuantity: (
+    productId: string,
+    quantity: number,
+    unidad?: UnidadDispensacion
+  ) => { success: boolean; message?: string };
   removeFromCart: (productId: string) => void;
   clearCart: () => void;
   cartSubtotal: number;
   cartDiscount: number;
   cartTotal: number;
 
-  // Sales & Checkout
+  // Sales & Checkout (con validación obligatoria de recetas y fiscalizados)
   checkout: (params: {
     tipoComprobante: TipoComprobante;
     cliente: { id?: string; nombre: string; documento: string };
     metodoPago: MetodoPago;
     montoRecibido?: number;
     vendedor?: string;
+    datosReceta?: RecetaMedicaControlada;
   }) => Sale;
   annulSale: (saleId: string, motivo: string) => void;
 
@@ -130,7 +191,6 @@ interface PharmacyContextType {
 const PharmacyContext = createContext<PharmacyContextType | undefined>(undefined);
 
 export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Tenants & Users
   const [tenants, setTenants] = useState<TenantSettings[]>(() => {
     try {
       const saved = localStorage.getItem('farmacontrol_tenants');
@@ -149,6 +209,15 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   });
 
+  const [liquidaciones, setLiquidaciones] = useState<Liquidacion[]>(() => {
+    try {
+      const saved = localStorage.getItem('farmacontrol_liquidaciones');
+      return saved ? JSON.parse(saved) : INITIAL_LIQUIDACIONES;
+    } catch {
+      return INITIAL_LIQUIDACIONES;
+    }
+  });
+
   const [currentTenantId, setCurrentTenantId] = useState<string>(() => {
     try {
       return localStorage.getItem('farmacontrol_current_tenant_id') || 'tenant-1';
@@ -157,7 +226,6 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   });
 
-  // Current logged in user (default to tenant admin for easy demonstration)
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     try {
       const saved = localStorage.getItem('farmacontrol_current_user');
@@ -169,7 +237,6 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const [activeView, setActiveView] = useState<AppView>('pos');
 
-  // Load products, customers, sales, cash
   const [products, setProducts] = useState<Product[]>(() => {
     try {
       const saved = localStorage.getItem('farmacontrol_products');
@@ -224,7 +291,34 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   });
 
-  // Sync state to local storage
+  const [cierresTurno, setCierresTurno] = useState<CierreTurnoCajero[]>(() => {
+    try {
+      const saved = localStorage.getItem('farmacontrol_cierres_turno');
+      return saved ? JSON.parse(saved) : INITIAL_CIERRES_TURNO;
+    } catch {
+      return INITIAL_CIERRES_TURNO;
+    }
+  });
+
+  const [arqueosDiarios, setArqueosDiarios] = useState<ArqueoGeneralDia[]>(() => {
+    try {
+      const saved = localStorage.getItem('farmacontrol_arqueos_diarios');
+      return saved ? JSON.parse(saved) : INITIAL_ARQUEOS_DIARIOS;
+    } catch {
+      return INITIAL_ARQUEOS_DIARIOS;
+    }
+  });
+
+  const [libroControlados, setLibroControlados] = useState<LibroOficialControladosEntry[]>(() => {
+    try {
+      const saved = localStorage.getItem('farmacontrol_libro_controlados');
+      return saved ? JSON.parse(saved) : INITIAL_LIBRO_CONTROLADOS;
+    } catch {
+      return INITIAL_LIBRO_CONTROLADOS;
+    }
+  });
+
+  // Local storage synchronization
   useEffect(() => {
     try {
       localStorage.setItem('farmacontrol_tenants', JSON.stringify(tenants));
@@ -240,6 +334,14 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       console.error(e);
     }
   }, [users]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('farmacontrol_liquidaciones', JSON.stringify(liquidaciones));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [liquidaciones]);
 
   useEffect(() => {
     try {
@@ -309,11 +411,33 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, [disposalActs]);
 
-  // Current active tenant
+  useEffect(() => {
+    try {
+      localStorage.setItem('farmacontrol_cierres_turno', JSON.stringify(cierresTurno));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [cierresTurno]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('farmacontrol_arqueos_diarios', JSON.stringify(arqueosDiarios));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [arqueosDiarios]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('farmacontrol_libro_controlados', JSON.stringify(libroControlados));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [libroControlados]);
+
   const currentTenant =
     tenants.find(t => t.id === currentTenantId) || tenants[0] || INITIAL_TENANTS[0];
 
-  // Auth operations
   const login = (email: string, pass: string): { success: boolean; message?: string } => {
     const foundUser = users.find(
       u => u.email.toLowerCase() === email.toLowerCase().trim() && u.password === pass
@@ -323,7 +447,10 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return { success: false, message: 'Correo o contraseña incorrectos.' };
     }
 
-    // Check if tenant license is expired/suspended (if not superadmin)
+    if (foundUser.activo === false) {
+      return { success: false, message: 'Este usuario se encuentra inactivo. Comuníquese con su administrador.' };
+    }
+
     if (foundUser.role !== 'superadmin' && foundUser.tenantId) {
       const userTenant = tenants.find(t => t.id === foundUser.tenantId);
       if (userTenant) {
@@ -374,7 +501,19 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       password: adminUserData.pass,
       nombre: adminUserData.name,
       role: 'tenant_admin',
-      tenantId: newTenantId
+      tenantId: newTenantId,
+      assignedModules: [
+        'pos',
+        'inventario',
+        'vencimientos',
+        'ventas',
+        'clientes',
+        'caja',
+        'configuracion',
+        'productividad',
+        'cajeros_permisos'
+      ],
+      activo: true
     };
 
     setTenants(prev => [...prev, newTenant]);
@@ -393,68 +532,266 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
-  // Cart operations
-  const addToCart = (product: Product, quantity = 1): { success: boolean; message?: string } => {
-    const status = getExpirationStatus(product.fechaVencimiento);
-    if (
-      status === 'vencido' ||
-      product.estadoDisposicion === 'cuarentena' ||
-      product.estadoDisposicion === 'merma'
-    ) {
+  const createUser = (userData: Omit<User, 'id'>) => {
+    const newUser: User = {
+      ...userData,
+      id: `user-${Date.now()}`
+    };
+    setUsers(prev => [...prev, newUser]);
+  };
+
+  const updateUser = (userId: string, updates: Partial<User>) => {
+    setUsers(prev => prev.map(u => (u.id === userId ? { ...u, ...updates } : u)));
+  };
+
+  const deleteUser = (userId: string) => {
+    setUsers(prev => prev.filter(u => u.id !== userId));
+  };
+
+  const updateUserModules = (userId: string, modules: string[]) => {
+    setUsers(prev =>
+      prev.map(u => (u.id === userId ? { ...u, assignedModules: modules } : u))
+    );
+  };
+
+  const updateUserAssignedModules = updateUserModules;
+
+  const toggleUserStatus = (userId: string) => {
+    setUsers(prev =>
+      prev.map(u => (u.id === userId ? { ...u, activo: !u.activo } : u))
+    );
+  };
+
+  const addLiquidacion = (data: Omit<Liquidacion, 'id'>) => {
+    const newLiq: Liquidacion = {
+      ...data,
+      id: `liq-${Date.now()}`
+    };
+    setLiquidaciones(prev => [newLiq, ...prev]);
+  };
+
+  const updateLiquidacionStatus = (id: string, status: 'pagado' | 'pendiente') => {
+    setLiquidaciones(prev =>
+      prev.map(l =>
+        l.id === id
+          ? {
+              ...l,
+              estado: status,
+              fechaPago: status === 'pagado' ? new Date().toISOString().split('T')[0] : l.fechaPago
+            }
+          : l
+      )
+    );
+  };
+
+  const registrarPagoLiquidacion = (liquidacionId: string) => {
+    setLiquidaciones(prev =>
+      prev.map(l =>
+        l.id === liquidacionId
+          ? {
+              ...l,
+              estado: 'pagado',
+              fechaPago: new Date().toISOString().split('T')[0],
+              comprobanteSaaS: `FAC-SAAS-${Math.floor(1000 + Math.random() * 9000)}`
+            }
+          : l
+      )
+    );
+  };
+
+  // Turnos & Arqueos (Cajero y Admin)
+  const registrarCierreTurnoCajero = (cierreData: Omit<CierreTurnoCajero, 'id'>): CierreTurnoCajero => {
+    const nuevoCierre: CierreTurnoCajero = {
+      ...cierreData,
+      id: `cierre-${Date.now()}`,
+      tenantId: currentTenant.id
+    };
+    setCierresTurno(prev => [nuevoCierre, ...prev]);
+    return nuevoCierre;
+  };
+
+  const auditarCierreTurno = (cierreId: string, updates: Partial<CierreTurnoCajero>) => {
+    setCierresTurno(prev =>
+      prev.map(c =>
+        c.id === cierreId
+          ? {
+              ...c,
+              ...updates,
+              fechaAuditoria: new Date().toISOString()
+            }
+          : c
+      )
+    );
+  };
+
+  const generarArqueoGeneralDia = (
+    arqueoData: Omit<ArqueoGeneralDia, 'id' | 'tenantId' | 'fecha' | 'responsableAdmin' | 'turnosAuditados'> & { observaciones?: string }
+  ): ArqueoGeneralDia => {
+    const nuevoArqueo: ArqueoGeneralDia = {
+      ...arqueoData,
+      id: `arq-${Date.now()}`,
+      tenantId: currentTenant.id,
+      fecha: new Date().toISOString().split('T')[0],
+      responsableAdmin: currentTenant.regenteQF || currentUser?.nombre || 'Administrador',
+      turnosAuditados: cierresTurno.map(c => c.id),
+      observaciones: arqueoData.observaciones || 'Arqueo oficial diario verificado'
+    };
+    setArqueosDiarios(prev => [nuevoArqueo, ...prev]);
+    return nuevoArqueo;
+  };
+
+  const reintentarEnvioSunat = (saleId: string) => {
+    setSales(prev =>
+      prev.map(s => {
+        if (s.id !== saleId) return s;
+        const hash = s.hashCPE || generateMockHashCpe(s.correlativo, s.total);
+        const qr = s.qrCodeData || generateSunatQrString(s, currentTenant.ruc, hash);
+        const xml = s.xmlContent || generateSunatXmlUbl21(s, currentTenant, hash);
+        const cdr = s.cdrContent || generateSunatCdrXml(s, currentTenant.ruc, hash);
+
+        return {
+          ...s,
+          sunatStatus: 'ACEPTADO',
+          sunatResponseCode: '0',
+          sunatDescription: `Comprobante ${s.correlativo} reenviado y ACEPTADO por SUNAT con CDR.`,
+          hashCPE: hash,
+          qrCodeData: qr,
+          xmlContent: xml,
+          cdrContent: cdr,
+          fechaEnvioSunat: new Date().toISOString()
+        };
+      })
+    );
+  };
+
+  // Cart operations (FEFO & Fraccionamiento multinivel)
+  const addToCart = (
+    product: Product,
+    quantity = 1,
+    unidad: UnidadDispensacion = 'caja'
+  ): { success: boolean; message?: string } => {
+    // 1. REGLA 2: Bloqueo duro si el producto o sus lotes vigentes están vencidos (fecha_vencimiento <= fecha_actual)
+    if (isBatchExpired(product.fechaVencimiento)) {
       return {
         success: false,
-        message:
-          '¡BLOQUEO SANITARIO! Este medicamento está caducado o en cuarentena y su dispensación está prohibida.'
+        message: `¡BLOQUEO SANITARIO FEFO! El medicamento "${product.nombre}" tiene lote caducado (${product.fechaVencimiento}). Su comercialización está penada por la Ley General de Salud N° 26842 y D.S. N° 014-2011-SA.`
       };
     }
 
-    if (product.stock <= 0) {
-      return { success: false, message: 'Producto sin stock disponible.' };
+    if (product.estadoDisposicion === 'cuarentena' || product.estadoDisposicion === 'merma') {
+      return {
+        success: false,
+        message: `¡BLOQUEO SANITARIO! El medicamento "${product.nombre}" se encuentra en estado de ${product.estadoDisposicion.toUpperCase()} y no puede ser dispensado.`
+      };
     }
 
-    const existingIndex = cart.findIndex(c => c.product.id === product.id);
+    // 2. REGLA 3: Cálculo a nivel de mínima unidad de despacho
+    const requiredMinimas = calculateMinimalUnits(product, quantity, unidad);
+    const availableMinimas = product.stockMinimasUnidades ?? (product.stock * (product.factorConversionTotal || 1));
+
+    if (availableMinimas <= 0) {
+      return { success: false, message: `Producto "${product.nombre}" sin existencias disponibles en almacén.` };
+    }
+
+    // 3. REGLA 2: Asignación por algoritmo FEFO (First Expired, First Out)
+    const fefoResult = allocateFefoStock(product, requiredMinimas);
+    if (!fefoResult.success) {
+      return {
+        success: false,
+        message: fefoResult.error || 'No hay lotes vigentes suficientes para dispensar este medicamento.'
+      };
+    }
+
+    const unitPrice = getPriceForUnit(product, unidad);
     const discount = product.descuentoPromocional || 0;
-    const finalPrice = discount > 0 ? product.precioVenta * (1 - discount / 100) : product.precioVenta;
+    const finalPrice = discount > 0 ? unitPrice * (1 - discount / 100) : unitPrice;
+    const descUnit = unitPrice - finalPrice;
+
+    const existingIndex = cart.findIndex(
+      c => c.product.id === product.id && c.unidadDispensada === unidad
+    );
 
     if (existingIndex > -1) {
       const currentQty = cart[existingIndex].cantidad;
-      if (currentQty + quantity > product.stock) {
+      const newTotalQty = currentQty + quantity;
+      const newTotalMinimas = calculateMinimalUnits(product, newTotalQty, unidad);
+
+      if (newTotalMinimas > availableMinimas) {
         return {
           success: false,
-          message: `Stock máximo disponible alcanzado (${product.stock} unidades).`
+          message: `Stock insuficiente. Disponible: ${availableMinimas} unidades mínimas.`
         };
       }
+
       const updated = [...cart];
-      updated[existingIndex].cantidad += quantity;
+      updated[existingIndex].cantidad = newTotalQty;
+      updated[existingIndex].unidadesMinimasTotal = newTotalMinimas;
       setCart(updated);
     } else {
       setCart([
         ...cart,
         {
           product,
-          cantidad: Math.min(quantity, product.stock),
+          cantidad: quantity,
+          unidadDispensada: unidad,
+          unidadesMinimasTotal: requiredMinimas,
           precioAplicado: Number(finalPrice.toFixed(2)),
-          descuentoUnitario: Number((product.precioVenta - finalPrice).toFixed(2))
+          descuentoUnitario: Number(descUnit.toFixed(2)),
+          loteAsignadoFefo: fefoResult.loteCriticoExpiraPronto || getPreferredFefoBatch(product) || undefined
         }
       ]);
     }
     return { success: true };
   };
 
-  const updateCartQuantity = (productId: string, quantity: number) => {
+  const updateCartQuantity = (
+    productId: string,
+    quantity: number,
+    unidad?: UnidadDispensacion
+  ): { success: boolean; message?: string } => {
     if (quantity <= 0) {
       removeFromCart(productId);
-      return;
+      return { success: true };
     }
     const item = cart.find(c => c.product.id === productId);
-    if (!item) return;
+    if (!item) return { success: false, message: 'Producto no encontrado en el carrito' };
 
-    if (quantity > item.product.stock) {
-      alert(`Solo hay ${item.product.stock} unidades disponibles en inventario.`);
-      return;
+    const targetUnidad = unidad || item.unidadDispensada;
+    const requiredMinimas = calculateMinimalUnits(item.product, quantity, targetUnidad);
+    const availableMinimas = item.product.stockMinimasUnidades ?? (item.product.stock * (item.product.factorConversionTotal || 1));
+
+    if (requiredMinimas > availableMinimas) {
+      return {
+        success: false,
+        message: `Solo hay ${availableMinimas} unidades mínimas disponibles en inventario.`
+      };
     }
 
-    setCart(cart.map(c => (c.product.id === productId ? { ...c, cantidad: quantity } : c)));
+    const fefoCheck = allocateFefoStock(item.product, requiredMinimas);
+    if (!fefoCheck.success) {
+      return { success: false, message: fefoCheck.error };
+    }
+
+    const unitPrice = getPriceForUnit(item.product, targetUnidad);
+    const discount = item.product.descuentoPromocional || 0;
+    const finalPrice = discount > 0 ? unitPrice * (1 - discount / 100) : unitPrice;
+
+    setCart(
+      cart.map(c =>
+        c.product.id === productId
+          ? {
+              ...c,
+              cantidad: quantity,
+              unidadDispensada: targetUnidad,
+              unidadesMinimasTotal: requiredMinimas,
+              precioAplicado: Number(finalPrice.toFixed(2)),
+              descuentoUnitario: Number((unitPrice - finalPrice).toFixed(2)),
+              loteAsignadoFefo: fefoCheck.loteCriticoExpiraPronto || c.loteAsignadoFefo
+            }
+          : c
+      )
+    );
+    return { success: true };
   };
 
   const removeFromCart = (productId: string) => {
@@ -465,18 +802,56 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setCart([]);
   };
 
-  const cartSubtotal = cart.reduce((acc, item) => acc + item.product.precioVenta * item.cantidad, 0);
+  const cartSubtotal = cart.reduce((acc, item) => {
+    const origUnitPrice = getPriceForUnit(item.product, item.unidadDispensada);
+    return acc + origUnitPrice * item.cantidad;
+  }, 0);
   const cartTotal = cart.reduce((acc, item) => acc + item.precioAplicado * item.cantidad, 0);
   const cartDiscount = cartSubtotal - cartTotal;
 
-  // Checkout sale
+  // Exportar el Libro Oficial de Psicotrópicos y Estupefacientes
+  const exportarLibroControladosCsv = (): string => {
+    const header =
+      'CorrelativoVenta,Fecha,Medicamento,PrincipioActivo,Lote,FechaVencimiento,CantidadDispensada,Unidad,PacienteNombre,PacienteDNI,MedicoPrescriptor,CMP,RecetaFolio,RecetaFecha,QFResponsable';
+    const rows = libroControlados.map(e => {
+      return `"${e.correlativoVenta}","${e.fecha}","${e.nombreMedicamento}","${e.principioActivo}","${e.numeroLote}","${e.fechaVencimiento}",${e.cantidadMinima},"${e.unidadMinima}","${e.pacienteNombre}","${e.pacienteDni}","${e.medicoNombre}","${e.medicoCMP}","${e.recetaFolio}","${e.recetaFechaEmision}","${e.dispensadoPor}"`;
+    });
+    return [header, ...rows].join('\r\n');
+  };
+
+  // Checkout sale with SUNAT UBL 2.1 & DIGEMID Regulatory Compliance
   const checkout = (params: {
     tipoComprobante: TipoComprobante;
     cliente: { id?: string; nombre: string; documento: string };
     metodoPago: MetodoPago;
     montoRecibido?: number;
     vendedor?: string;
+    datosReceta?: RecetaMedicaControlada;
   }): Sale => {
+    if (cart.length === 0) {
+      throw new Error('El carrito de compras está vacío.');
+    }
+
+    // 4. REGLA 4: Control de Recetas y Productos Fiscalizados
+    const requiresRecipe = cart.some(ci => ci.product.requiereReceta || ci.product.esFiscalizado);
+    const hasFiscalized = cart.some(ci => ci.product.esFiscalizado);
+
+    if (requiresRecipe) {
+      if (
+        !params.datosReceta ||
+        !params.datosReceta.pacienteNombre?.trim() ||
+        !params.datosReceta.pacienteDocumento?.trim() ||
+        !params.datosReceta.medicoNombre?.trim() ||
+        !params.datosReceta.medicoCMP?.trim() ||
+        !params.datosReceta.recetaSerieFolio?.trim() ||
+        !params.datosReceta.recetaFechaEmision?.trim()
+      ) {
+        throw new Error(
+          '¡BLOQUEO REGULATORIO DIGEMID! La transacción contiene medicamentos sujetos a control o receta obligatoria (D.S. N° 023-2001-SA). Se exige registrar: Nombre y DNI del Paciente, Médico Prescriptor, CMP, Serie/Folio de Receta y Fecha de Emisión.'
+        );
+      }
+    }
+
     const saleId = `sale-${Date.now()}`;
     const nextCorrelativoNum = sales.length + 143;
     const prefix =
@@ -487,26 +862,48 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         : 'T001';
     const correlativo = `${prefix}-${String(nextCorrelativoNum).padStart(6, '0')}`;
 
-    const items = cart.map(item => ({
-      productId: item.product.id,
-      codigo: item.product.codigo,
-      nombre: item.product.nombre,
-      principioActivo: item.product.principioActivo,
-      lote: item.product.lote,
-      fechaVencimiento: item.product.fechaVencimiento,
-      cantidad: item.cantidad,
-      precioUnitario: item.precioAplicado,
-      descuentoUnitario: item.descuentoUnitario,
-      subtotal: Number((item.precioAplicado * item.cantidad).toFixed(2))
-    }));
+    // Construcción de items con trazabilidad FEFO por lote
+    const items = cart.map(item => {
+      const fefoRes = allocateFefoStock(item.product, item.unidadesMinimasTotal);
+      const lotesDespachados = fefoRes.allocations;
+      const lotePrincipal = lotesDespachados[0] || {
+        numeroLote: item.product.lote,
+        fechaVencimiento: item.product.fechaVencimiento
+      };
+
+      return {
+        productId: item.product.id,
+        codigo: item.product.codigo,
+        nombre: item.product.nombre,
+        principioActivo: item.product.principioActivo,
+        lote: lotePrincipal.numeroLote,
+        fechaVencimiento: lotePrincipal.fechaVencimiento,
+        cantidad: item.cantidad,
+        unidadDispensada: item.unidadDispensada,
+        unidadesMinimas: item.unidadesMinimasTotal,
+        lotesDespachados,
+        precioUnitario: item.precioAplicado,
+        descuentoUnitario: item.descuentoUnitario,
+        subtotal: Number((item.precioAplicado * item.cantidad).toFixed(2))
+      };
+    });
 
     const totalAmount = Number(cartTotal.toFixed(2));
     const taxRate = (currentTenant.igvPorcentaje || 18) / 100;
     const igv = Number(((totalAmount * taxRate) / (1 + taxRate)).toFixed(2));
     const subtotal = Number((totalAmount - igv).toFixed(2));
 
-    const newSale: Sale = {
+    const codigoTipoComprobante =
+      params.tipoComprobante === 'factura' ? '01' : params.tipoComprobante === 'boleta' ? '03' : '00';
+
+    let hashCPE = 'N/A';
+    let qrCodeData = '';
+    let xmlContent = '';
+    let cdrContent = '';
+
+    const tempSaleForSunat: Sale = {
       id: saleId,
+      tenantId: currentTenant.id,
       correlativo,
       tipoComprobante: params.tipoComprobante,
       fecha: new Date().toISOString(),
@@ -523,20 +920,105 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         ? Math.max(0, Number((params.montoRecibido - totalAmount).toFixed(2)))
         : 0,
       vendedor: params.vendedor || currentUser?.nombre || `${currentTenant.regenteQF} (${currentTenant.colegiaturaQF})`,
-      estado: 'completada'
+      cajeroId: currentUser?.id,
+      estado: 'completada',
+      esVentaControlada: hasFiscalized,
+      datosReceta: requiresRecipe ? params.datosReceta : undefined
     };
 
-    // Deduct stock from products
+    if (params.tipoComprobante !== 'ticket') {
+      hashCPE = generateMockHashCpe(correlativo, totalAmount);
+      qrCodeData = generateSunatQrString(tempSaleForSunat, currentTenant.ruc, hashCPE);
+      xmlContent = generateSunatXmlUbl21(tempSaleForSunat, currentTenant, hashCPE);
+      cdrContent = generateSunatCdrXml(tempSaleForSunat, currentTenant.ruc, hashCPE);
+    }
+
+    const newSale: Sale = {
+      ...tempSaleForSunat,
+      codigoTipoComprobante,
+      serie: prefix,
+      numero: nextCorrelativoNum,
+      sunatStatus: params.tipoComprobante === 'ticket' ? 'NO_APLICA' : 'ACEPTADO',
+      sunatResponseCode: params.tipoComprobante === 'ticket' ? 'N/A' : '0',
+      sunatDescription:
+        params.tipoComprobante === 'ticket'
+          ? 'Ticket de control interno'
+          : `El comprobante ${correlativo} ha sido ACEPTADO por SUNAT con CDR.`,
+      hashCPE,
+      qrCodeData,
+      xmlContent,
+      cdrContent,
+      fechaEnvioSunat: new Date().toISOString()
+    };
+
+    // 2. REGLA 2 y 3: Descuento estricto de inventario por lotes FEFO y a nivel de mínimas unidades
     setProducts(prevProducts => {
       return prevProducts.map(p => {
         const soldItem = cart.find(ci => ci.product.id === p.id);
-        if (soldItem) {
-          const newStock = Math.max(0, p.stock - soldItem.cantidad);
-          return { ...p, stock: newStock };
-        }
-        return p;
+        if (!soldItem) return p;
+
+        const unidadesDescontadas = soldItem.unidadesMinimasTotal;
+        const currentMinimas = p.stockMinimasUnidades ?? (p.stock * (p.factorConversionTotal || 1));
+        const newMinimas = Math.max(0, currentMinimas - unidadesDescontadas);
+        const factor = p.factorConversionTotal || 1;
+        const newStockCajas = Math.floor(newMinimas / factor);
+
+        // Actualizar lotes descontando del más próximo a vencer (FEFO)
+        let pending = unidadesDescontadas;
+        const updatedLotes = (p.lotes || []).map(b => {
+          if (pending <= 0) return b;
+          const takeFromBatch = Math.min(b.stockUnidades, pending);
+          pending -= takeFromBatch;
+          return {
+            ...b,
+            stockUnidades: b.stockUnidades - takeFromBatch
+          };
+        });
+
+        // Seleccionar nuevo lote preferente no vencido
+        const nuevoLotePreferente = updatedLotes
+          .filter(b => b.stockUnidades > 0 && !isBatchExpired(b.fechaVencimiento))
+          .sort((a, b) => new Date(a.fechaVencimiento).getTime() - new Date(b.fechaVencimiento).getTime())[0];
+
+        return {
+          ...p,
+          stockMinimasUnidades: newMinimas,
+          stock: newStockCajas,
+          lotes: updatedLotes,
+          lote: nuevoLotePreferente ? nuevoLotePreferente.numeroLote : p.lote,
+          fechaVencimiento: nuevoLotePreferente ? nuevoLotePreferente.fechaVencimiento : p.fechaVencimiento
+        };
       });
     });
+
+    // 4. REGLA 4: Asentar en Libro Oficial de Fiscalizados si contiene estupefacientes / psicotrópicos
+    if (hasFiscalized && params.datosReceta) {
+      const fiscalizedItems = cart.filter(ci => ci.product.esFiscalizado);
+      const newEntries: LibroOficialControladosEntry[] = fiscalizedItems.map(fi => ({
+        id: `lib-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        tenantId: currentTenant.id,
+        saleId,
+        correlativoVenta: correlativo,
+        fecha: new Date().toISOString().split('T')[0],
+        productId: fi.product.id,
+        nombreMedicamento: fi.product.nombre,
+        principioActivo: fi.product.principioActivo,
+        presentacion: fi.product.presentacion,
+        numeroLote: fi.product.lote,
+        fechaVencimiento: fi.product.fechaVencimiento,
+        cantidadMinima: fi.unidadesMinimasTotal,
+        unidadMinima: fi.product.unidadMinima,
+        pacienteNombre: params.datosReceta!.pacienteNombre,
+        pacienteDni: params.datosReceta!.pacienteDocumento,
+        medicoNombre: params.datosReceta!.medicoNombre,
+        medicoCMP: params.datosReceta!.medicoCMP,
+        recetaFolio: params.datosReceta!.recetaSerieFolio,
+        recetaFechaEmision: params.datosReceta!.recetaFechaEmision,
+        dispensadoPor: `${currentTenant.regenteQF} (${currentTenant.colegiaturaQF})`
+      }));
+
+      setLibroControlados(prev => [...newEntries, ...prev]);
+    }
 
     // Update customer stats if registered
     if (params.cliente.id) {
@@ -575,7 +1057,17 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     });
 
     setSales(prev =>
-      prev.map(s => (s.id === saleId ? { ...s, estado: 'anulada', motivoAnulacion: motivo } : s))
+      prev.map(s =>
+        s.id === saleId
+          ? {
+              ...s,
+              estado: 'anulada',
+              motivoAnulacion: motivo,
+              sunatStatus: s.tipoComprobante === 'ticket' ? 'NO_APLICA' : 'ANULADO',
+              sunatDescription: `Comprobante ${s.correlativo} anulado con Nota de Crédito Electrónica: ${motivo}`
+            }
+          : s
+      )
     );
   };
 
@@ -753,6 +1245,9 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setDisposalActs(INITIAL_DISPOSAL_ACTS);
     setTenants(INITIAL_TENANTS);
     setUsers(INITIAL_USERS);
+    setLiquidaciones(INITIAL_LIQUIDACIONES);
+    setCierresTurno(INITIAL_CIERRES_TURNO);
+    setArqueosDiarios(INITIAL_ARQUEOS_DIARIOS);
     setCurrentTenantId('tenant-1');
     setCurrentUser(INITIAL_USERS[1]);
     localStorage.clear();
@@ -795,12 +1290,22 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         users,
         tenants,
         currentTenant,
+        liquidaciones,
         login,
         logout,
         updateCurrentTenant,
         createTenant,
         updateTenantLicense,
         switchActiveTenant,
+        createUser,
+        updateUser,
+        deleteUser,
+        updateUserModules,
+        updateUserAssignedModules,
+        toggleUserStatus,
+        addLiquidacion,
+        updateLiquidacionStatus,
+        registrarPagoLiquidacion,
         activeView,
         setActiveView,
         products,
@@ -809,6 +1314,14 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         cart,
         cashRegister,
         disposalActs,
+        libroControlados,
+        exportarLibroControladosCsv,
+        cierresTurno,
+        arqueosDiarios,
+        registrarCierreTurnoCajero,
+        auditarCierreTurno,
+        generarArqueoGeneralDia,
+        reintentarEnvioSunat,
         addToCart,
         updateCartQuantity,
         removeFromCart,

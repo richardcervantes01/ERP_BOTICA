@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { usePharmacy } from '../../context/PharmacyContext';
-import { TipoComprobante, MetodoPago, Sale } from '../../types/pharmacy';
+import { TipoComprobante, MetodoPago, Sale, RecetaMedicaControlada } from '../../types/pharmacy';
 import {
   CreditCard,
   Banknote,
@@ -9,9 +9,12 @@ import {
   X,
   User,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  FileText,
+  ShieldAlert
 } from 'lucide-react';
 import { formatCurrency } from '../../utils/dateUtils';
+import { PrescriptionModal } from './PrescriptionModal';
 
 interface PaymentModalProps {
   isOpen: boolean;
@@ -33,6 +36,13 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
   // Payment cash state
   const [montoEfectivo, setMontoEfectivo] = useState<string>(cartTotal.toFixed(2));
   const [errorMsg, setErrorMsg] = useState('');
+
+  // Prescription / Controlled Drugs State
+  const [datosReceta, setDatosReceta] = useState<RecetaMedicaControlada | null>(null);
+  const [isPrescriptionModalOpen, setIsPrescriptionModalOpen] = useState(false);
+
+  const requiresRecipe = cart.some(ci => ci.product.requiereReceta || ci.product.esFiscalizado);
+  const hasFiscalized = cart.some(ci => ci.product.esFiscalizado);
 
   if (!isOpen) return null;
 
@@ -68,6 +78,12 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
       return;
     }
 
+    // Interceptar si requiere receta y no ha sido completada
+    if (requiresRecipe && !datosReceta) {
+      setIsPrescriptionModalOpen(true);
+      return;
+    }
+
     if (tipoComprobante === 'factura') {
       if (customDoc.trim().length !== 11) {
         setErrorMsg('Para Factura Electrónica se requiere un RUC válido de 11 dígitos.');
@@ -93,7 +109,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
           documento: customDoc || '00000000'
         },
         metodoPago,
-        montoRecibido: metodoPago === 'efectivo' ? cashReceived : cartTotal
+        montoRecibido: metodoPago === 'efectivo' ? cashReceived : cartTotal,
+        datosReceta: datosReceta || undefined
       });
 
       onSuccess(sale);
@@ -337,6 +354,67 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
             </div>
           )}
 
+          {/* Control Sanitario de Recetas y Fiscalizados */}
+          {requiresRecipe && (
+            <div className={`p-4 rounded-xl border flex items-start justify-between gap-3 ${
+              datosReceta
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : 'bg-amber-50 border-amber-300 text-amber-900'
+            }`}>
+              <div className="flex items-start gap-2.5">
+                {hasFiscalized ? (
+                  <ShieldAlert className={`w-5 h-5 shrink-0 mt-0.5 ${datosReceta ? 'text-emerald-600' : 'text-rose-600'}`} />
+                ) : (
+                  <FileText className={`w-5 h-5 shrink-0 mt-0.5 ${datosReceta ? 'text-emerald-600' : 'text-amber-600'}`} />
+                )}
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/10 uppercase">
+                      Exigencia DIGEMID / MINSA
+                    </span>
+                    {hasFiscalized && (
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-200 text-rose-800">
+                        Fiscalizado
+                      </span>
+                    )}
+                  </div>
+                  {datosReceta ? (
+                    <div className="mt-1 text-xs">
+                      <p className="font-bold text-emerald-900">
+                        ✓ Receta Convalidada: Dr. {datosReceta.medicoNombre} (CMP {datosReceta.medicoCMP})
+                      </p>
+                      <p className="text-[11px] text-emerald-700">
+                        Paciente: {datosReceta.pacienteNombre} ({datosReceta.pacienteDocumento}) · Folio: {datosReceta.recetaSerieFolio}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="mt-1 text-xs">
+                      <p className="font-bold text-amber-900">
+                        {hasFiscalized
+                          ? '¡Atención! Venta de Estupefaciente / Psicotrópico Controlado'
+                          : '¡Atención! Medicamento con Venta Bajo Receta Médica'}
+                      </p>
+                      <p className="text-[11px] text-amber-700">
+                        Debe asentar obligatoriamente médico prescriptor (CMP), paciente y serie/folio de la receta física.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsPrescriptionModalOpen(true)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition shrink-0 cursor-pointer ${
+                  datosReceta
+                    ? 'bg-emerald-100 hover:bg-emerald-200 text-emerald-900 border border-emerald-300'
+                    : 'bg-amber-600 hover:bg-amber-700 text-white shadow-xs'
+                }`}
+              >
+                {datosReceta ? 'Editar Ficha' : 'Completar Receta *'}
+              </button>
+            </div>
+          )}
+
           {/* Resumen del cobro */}
           <div className="border-t border-slate-200 pt-3 space-y-1.5 text-xs">
             {cartDiscount > 0 && (
@@ -370,6 +448,19 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose, onS
           </div>
         </form>
       </div>
+
+      {/* Modal de Validación Sanitaria de Recetas DIGEMID */}
+      <PrescriptionModal
+        isOpen={isPrescriptionModalOpen}
+        onClose={() => setIsPrescriptionModalOpen(false)}
+        onSubmit={(receta) => {
+          setDatosReceta(receta);
+          setIsPrescriptionModalOpen(false);
+        }}
+        cartItems={cart}
+        defaultCustomerDoc={customDoc}
+        defaultCustomerName={customName}
+      />
     </div>
   );
 };

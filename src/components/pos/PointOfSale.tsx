@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { usePharmacy } from '../../context/PharmacyContext';
-import { Product, Sale } from '../../types/pharmacy';
+import { Product, Sale, UnidadDispensacion } from '../../types/pharmacy';
 import {
   Search,
   Plus,
@@ -11,13 +11,20 @@ import {
   AlertTriangle,
   FileText,
   Percent,
-  Clock
+  Clock,
+  Lock,
+  Layers,
+  ShieldAlert
 } from 'lucide-react';
 import { formatCurrency, formatDateSpanish, getExpirationStatus, getExpirationLabel, getDaysUntilExpiration } from '../../utils/dateUtils';
 import { PaymentModal } from './PaymentModal';
 import { ReceiptModal } from './ReceiptModal';
 
-export const PointOfSale: React.FC = () => {
+interface PointOfSaleProps {
+  onOpenCloseShift?: () => void;
+}
+
+export const PointOfSale: React.FC<PointOfSaleProps> = ({ onOpenCloseShift }) => {
   const {
     products,
     cart,
@@ -27,7 +34,8 @@ export const PointOfSale: React.FC = () => {
     clearCart,
     cartSubtotal,
     cartDiscount,
-    cartTotal
+    cartTotal,
+    currentUser
   } = usePharmacy();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -54,6 +62,7 @@ export const PointOfSale: React.FC = () => {
         p.nombre.toLowerCase().includes(q) ||
         p.principioActivo.toLowerCase().includes(q) ||
         p.codigo.toLowerCase().includes(q) ||
+        (p.codDigemid && p.codDigemid.toLowerCase().includes(q)) ||
         p.laboratorio.toLowerCase().includes(q) ||
         p.lote.toLowerCase().includes(q);
 
@@ -64,14 +73,14 @@ export const PointOfSale: React.FC = () => {
     });
   }, [products, searchQuery, selectedCategory, filterDiscountOnly]);
 
-  const handleProductClick = (product: Product) => {
-    const result = addToCart(product, 1);
+  const handleProductClick = (product: Product, unidad: UnidadDispensacion = 'caja') => {
+    const result = addToCart(product, 1, unidad);
     if (!result.success) {
       setFeedbackMsg({ text: result.message || 'No se pudo agregar el producto', type: 'error' });
-      setTimeout(() => setFeedbackMsg(null), 4000);
+      setTimeout(() => setFeedbackMsg(null), 5000);
     } else {
-      setFeedbackMsg({ text: `${product.nombre} agregado al carrito`, type: 'success' });
-      setTimeout(() => setFeedbackMsg(null), 2000);
+      setFeedbackMsg({ text: `${product.nombre} [${unidad.toUpperCase()}] agregado al carrito`, type: 'success' });
+      setTimeout(() => setFeedbackMsg(null), 2500);
     }
   };
 
@@ -179,24 +188,37 @@ export const PointOfSale: React.FC = () => {
                   return (
                     <div
                       key={p.id}
-                      onClick={() => !isBlocked && !isOutOfStock && handleProductClick(p)}
                       className={`p-3.5 rounded-xl border transition flex flex-col justify-between select-none relative ${
                         isBlocked
-                          ? 'bg-rose-50/40 border-rose-200 opacity-75 cursor-not-allowed'
+                          ? 'bg-rose-50/50 border-rose-300 opacity-90'
                           : isOutOfStock
-                          ? 'bg-slate-50 border-slate-200 opacity-60 cursor-not-allowed'
-                          : 'bg-white border-slate-200 hover:border-emerald-500 hover:shadow-md cursor-pointer group'
+                          ? 'bg-slate-50 border-slate-200 opacity-60'
+                          : 'bg-white border-slate-200 hover:border-emerald-500 hover:shadow-md group'
                       }`}
                     >
-                      {/* Top row: Barcode & Rx */}
+                      {/* Top row: Barcode, DIGEMID & Rx/Fiscalizado */}
                       <div>
                         <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono mb-1">
-                          <span>{p.codigo}</span>
-                          {p.requiereReceta && (
-                            <span className="text-[9px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded flex items-center gap-0.5">
-                              <FileText className="w-2.5 h-2.5" /> Rx
-                            </span>
-                          )}
+                          <span className="flex items-center gap-1">
+                            {p.codigo}
+                            {p.codDigemid && (
+                              <span className="text-[9px] bg-slate-100 text-slate-700 px-1 rounded font-bold">
+                                OPPF:{p.codDigemid}
+                              </span>
+                            )}
+                          </span>
+                          <div className="flex items-center gap-1">
+                            {p.esFiscalizado && (
+                              <span className="text-[9px] font-bold text-rose-800 bg-rose-100 border border-rose-300 px-1.5 py-0.5 rounded flex items-center gap-0.5">
+                                <ShieldAlert className="w-2.5 h-2.5" /> Fiscalizado
+                              </span>
+                            )}
+                            {p.requiereReceta && !p.esFiscalizado && (
+                              <span className="text-[9px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded flex items-center gap-0.5">
+                                <FileText className="w-2.5 h-2.5" /> Rx
+                              </span>
+                            )}
+                          </div>
                         </div>
 
                         {/* Title and presentation */}
@@ -209,7 +231,7 @@ export const PointOfSale: React.FC = () => {
 
                         {/* Expiration Tag & Batch */}
                         <div className="mt-2 flex items-center justify-between text-[10px]">
-                          <span className="text-slate-400 font-mono">Lote: {p.lote}</span>
+                          <span className="text-slate-400 font-mono">Lote FEFO: {p.lote}</span>
                           <span
                             className={`px-1.5 py-0.5 rounded text-[10px] border flex items-center gap-1 ${expLabel.bg} ${expLabel.text} ${expLabel.border}`}
                           >
@@ -219,35 +241,86 @@ export const PointOfSale: React.FC = () => {
                         </div>
                       </div>
 
-                      {/* Bottom row: Stock & Price */}
-                      <div className="flex justify-between items-end mt-3 pt-2.5 border-t border-slate-100">
-                        <div>
-                          <p className="text-[10px] text-slate-400">Stock</p>
-                          {isBlocked ? (
-                            <span className="text-[11px] font-bold text-rose-700">BLOQUEADO</span>
-                          ) : isOutOfStock ? (
-                            <span className="text-[11px] font-bold text-slate-500">AGOTADO</span>
-                          ) : (
-                            <span
-                              className={`text-xs font-bold ${
-                                isLowStock ? 'text-amber-600' : 'text-slate-700'
-                              }`}
-                            >
-                              {p.stock} un.
+                      {/* Hard lock error banner */}
+                      {isBlocked && (
+                        <div className="mt-2 p-1.5 rounded-lg bg-rose-100 border border-rose-300 text-rose-900 text-[10px] font-bold flex items-center gap-1">
+                          <Lock className="w-3 h-3 text-rose-700 shrink-0" />
+                          <span>¡BLOQUEO FEFO! Lote caducado. Venta prohibida (D.S. 014-2011-SA).</span>
+                        </div>
+                      )}
+
+                      {/* Bottom row: Multi-level fractioning actions */}
+                      <div className="mt-3 pt-2.5 border-t border-slate-100 space-y-2">
+                        <div className="flex justify-between items-end">
+                          <div>
+                            <p className="text-[10px] text-slate-400">Stock Disponible</p>
+                            {isBlocked ? (
+                              <span className="text-[11px] font-black text-rose-700">BLOQUEADO</span>
+                            ) : isOutOfStock ? (
+                              <span className="text-[11px] font-bold text-slate-500">AGOTADO</span>
+                            ) : (
+                              <div>
+                                <span className={`text-xs font-bold ${isLowStock ? 'text-amber-600' : 'text-slate-700'}`}>
+                                  {p.stock} {p.unidadEmpaque || 'Cajas'}
+                                </span>
+                                <span className="text-[10px] text-slate-400 block font-mono">
+                                  ({p.stockMinimasUnidades || (p.stock * (p.factorConversionTotal || 1))} {p.unidadMinima}s)
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="text-right">
+                            {hasDiscount && (
+                              <p className="text-[10px] text-slate-400 line-through">
+                                {formatCurrency(p.precioVenta)}
+                              </p>
+                            )}
+                            <span className="text-sm font-bold text-emerald-700">
+                              {formatCurrency(finalPrice)}
                             </span>
-                          )}
+                            <span className="text-[10px] text-slate-400 block">por {p.unidadEmpaque || 'Caja'}</span>
+                          </div>
                         </div>
 
-                        <div className="text-right">
-                          {hasDiscount && (
-                            <p className="text-[10px] text-slate-400 line-through">
-                              {formatCurrency(p.precioVenta)}
-                            </p>
-                          )}
-                          <span className="text-sm font-bold text-emerald-700">
-                            {formatCurrency(finalPrice)}
-                          </span>
-                        </div>
+                        {/* Multi-level Quick Dispense Buttons */}
+                        {!isBlocked && !isOutOfStock && (
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-1 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => handleProductClick(p, 'caja')}
+                              className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded text-[10px] font-bold flex items-center justify-center gap-1 transition cursor-pointer"
+                              title={`Dispensar 1 ${p.unidadEmpaque || 'Caja'}`}
+                            >
+                              <Plus className="w-2.5 h-2.5" />
+                              <span>{p.unidadEmpaque || 'Caja'}</span>
+                            </button>
+
+                            {p.blistersPorCaja && p.blistersPorCaja > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => handleProductClick(p, 'blister')}
+                                className="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded text-[10px] font-bold flex items-center justify-center gap-1 transition cursor-pointer"
+                                title={`Dispensar 1 ${p.unidadSubEmpaque || 'Blíster'}`}
+                              >
+                                <Plus className="w-2.5 h-2.5" />
+                                <span>{p.unidadSubEmpaque || 'Blíster'}</span>
+                              </button>
+                            )}
+
+                            {p.factorConversionTotal > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => handleProductClick(p, 'fraccion')}
+                                className="px-2 py-1 bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-200 rounded text-[10px] font-bold flex items-center justify-center gap-1 transition cursor-pointer"
+                                title={`Dispensar 1 ${p.unidadMinima} (Fracción)`}
+                              >
+                                <Plus className="w-2.5 h-2.5" />
+                                <span>1 {p.unidadMinima}</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
 
                       {/* Promo discount sticker badge */}
@@ -267,6 +340,24 @@ export const PointOfSale: React.FC = () => {
         {/* RIGHT COLUMN: Cart & Billing (Span 1) */}
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col justify-between h-full overflow-hidden">
           <div className="flex flex-col flex-1 overflow-hidden space-y-3">
+            {/* Cashier Shift Status & Close Button */}
+            {currentUser?.role === 'cashier' && onOpenCloseShift && (
+              <div className="bg-amber-50 border border-amber-200 p-2.5 rounded-xl flex items-center justify-between text-xs shrink-0">
+                <div>
+                  <p className="font-bold text-amber-900 text-[11px]">Turno de Caja Activo</p>
+                  <p className="text-[10px] text-amber-700">Cajero: {currentUser.nombre}</p>
+                </div>
+                <button
+                  onClick={onOpenCloseShift}
+                  className="px-2.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold text-[11px] flex items-center gap-1 transition cursor-pointer shadow-xs"
+                  title="Finalizar turno y declarar efectivo para arqueo"
+                >
+                  <Lock className="w-3 h-3" />
+                  <span>Cerrar Turno</span>
+                </button>
+              </div>
+            )}
+
             {/* Cart Header */}
             <div className="flex justify-between items-center border-b border-slate-100 pb-3 shrink-0">
               <h2 className="font-bold text-slate-800 text-sm flex items-center gap-2">
@@ -300,15 +391,22 @@ export const PointOfSale: React.FC = () => {
               ) : (
                 cart.map(item => (
                   <div
-                    key={item.product.id}
-                    className="p-3 bg-slate-50/80 rounded-xl border border-slate-200/80 text-xs space-y-2"
+                    key={`${item.product.id}-${item.unidadDispensada}`}
+                    className="p-3 bg-slate-50/90 rounded-xl border border-slate-200/90 text-xs space-y-2.5 shadow-2xs"
                   >
                     <div className="flex justify-between items-start gap-2">
                       <div className="flex-1">
-                        <p className="font-semibold text-slate-800 line-clamp-1">{item.product.nombre}</p>
-                        <p className="text-[10px] text-slate-500">
-                          Lote: <span className="font-mono">{item.product.lote}</span> · Vence:{' '}
-                          {formatDateSpanish(item.product.fechaVencimiento)}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className="font-semibold text-slate-800">{item.product.nombre}</p>
+                          {item.product.esFiscalizado && (
+                            <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300">
+                              Fiscalizado
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-slate-500 mt-0.5">
+                          Lote FEFO: <strong className="font-mono text-emerald-800">{item.loteAsignadoFefo?.numeroLote || item.product.lote}</strong> · Vence:{' '}
+                          {formatDateSpanish(item.loteAsignadoFefo?.fechaVencimiento || item.product.fechaVencimiento)}
                         </p>
                       </div>
                       <button
@@ -320,33 +418,82 @@ export const PointOfSale: React.FC = () => {
                       </button>
                     </div>
 
+                    {/* Multi-level Unit Selection in Cart */}
+                    <div className="flex items-center justify-between bg-white px-2 py-1 rounded-lg border border-slate-200 text-[11px]">
+                      <span className="text-slate-500 font-medium">Unidad Despacho:</span>
+                      <div className="flex items-center gap-1 font-bold">
+                        <button
+                          type="button"
+                          onClick={() => updateCartQuantity(item.product.id, item.cantidad, 'caja')}
+                          className={`px-1.5 py-0.5 rounded text-[10px] cursor-pointer transition ${
+                            item.unidadDispensada === 'caja'
+                              ? 'bg-emerald-600 text-white'
+                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                          }`}
+                        >
+                          {item.product.unidadEmpaque || 'Caja'}
+                        </button>
+                        {item.product.blistersPorCaja && item.product.blistersPorCaja > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => updateCartQuantity(item.product.id, item.cantidad, 'blister')}
+                            className={`px-1.5 py-0.5 rounded text-[10px] cursor-pointer transition ${
+                              item.unidadDispensada === 'blister'
+                                ? 'bg-blue-600 text-white'
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                          >
+                            {item.product.unidadSubEmpaque || 'Blíster'}
+                          </button>
+                        )}
+                        {item.product.factorConversionTotal > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => updateCartQuantity(item.product.id, item.cantidad, 'fraccion')}
+                            className={`px-1.5 py-0.5 rounded text-[10px] cursor-pointer transition ${
+                              item.unidadDispensada === 'fraccion'
+                                ? 'bg-purple-600 text-white'
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                          >
+                            {item.product.unidadMinima || 'Fracción'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
                     <div className="flex justify-between items-center pt-1 border-t border-slate-200/60">
-                      {/* Quantity Controls */}
-                      <div className="flex items-center gap-1 bg-white border border-slate-300 rounded-lg p-0.5">
-                        <button
-                          type="button"
-                          onClick={() => updateCartQuantity(item.product.id, item.cantidad - 1)}
-                          className="w-6 h-6 flex items-center justify-center text-slate-600 hover:bg-slate-100 rounded transition cursor-pointer"
-                        >
-                          <Minus className="w-3 h-3" />
-                        </button>
-                        <input
-                          type="number"
-                          min="1"
-                          max={item.product.stock}
-                          value={item.cantidad}
-                          onChange={e =>
-                            updateCartQuantity(item.product.id, parseInt(e.target.value) || 1)
-                          }
-                          className="w-8 text-center text-xs font-bold text-slate-800 outline-hidden"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => updateCartQuantity(item.product.id, item.cantidad + 1)}
-                          className="w-6 h-6 flex items-center justify-center text-slate-600 hover:bg-slate-100 rounded transition cursor-pointer"
-                        >
-                          <Plus className="w-3 h-3" />
-                        </button>
+                      {/* Quantity Controls & Minimal units breakdown */}
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1 bg-white border border-slate-300 rounded-lg p-0.5">
+                          <button
+                            type="button"
+                            onClick={() => updateCartQuantity(item.product.id, item.cantidad - 1, item.unidadDispensada)}
+                            className="w-6 h-6 flex items-center justify-center text-slate-600 hover:bg-slate-100 rounded transition cursor-pointer"
+                          >
+                            <Minus className="w-3 h-3" />
+                          </button>
+                          <input
+                            type="number"
+                            min="1"
+                            max={item.product.stock * 10}
+                            value={item.cantidad}
+                            onChange={e =>
+                              updateCartQuantity(item.product.id, parseInt(e.target.value) || 1, item.unidadDispensada)
+                            }
+                            className="w-8 text-center text-xs font-bold text-slate-800 outline-hidden"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => updateCartQuantity(item.product.id, item.cantidad + 1, item.unidadDispensada)}
+                            className="w-6 h-6 flex items-center justify-center text-slate-600 hover:bg-slate-100 rounded transition cursor-pointer"
+                          >
+                            <Plus className="w-3 h-3" />
+                          </button>
+                        </div>
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          = {item.unidadesMinimasTotal} {item.product.unidadMinima}s
+                        </span>
                       </div>
 
                       {/* Item Total Price */}
@@ -358,6 +505,9 @@ export const PointOfSale: React.FC = () => {
                         )}
                         <span className="text-xs font-bold text-slate-800">
                           {formatCurrency(item.precioAplicado * item.cantidad)}
+                        </span>
+                        <span className="text-[9px] text-slate-400 block font-mono">
+                          (S/ {item.precioAplicado.toFixed(2)} c/u)
                         </span>
                       </div>
                     </div>
