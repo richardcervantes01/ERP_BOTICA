@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+@media print {
+  aside, header, nav, button {
+    display: none !important;
+  }
+  body, main {
+    background: white !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+}

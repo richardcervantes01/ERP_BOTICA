@@ -1,0 +1,6 @@
+{
+  "name": "FarmaControl - ERP & POS para Botica",
+  "description": "Sistema ERP y Punto de Venta para farmacias y boticas enfocado en gestión de inventario, ventas rápidas y control riguroso de vencimientos y lotes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
