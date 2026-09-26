@@ -1,17 +1,32 @@
 import React from 'react';
 import { usePharmacy } from '../context/PharmacyContext';
-import { AlertTriangle, Clock, Wallet } from 'lucide-react';
+import { AlertTriangle, Clock, Wallet, Shield, Store, UserCircle } from 'lucide-react';
 import { formatCurrency } from '../utils/dateUtils';
 
-export const Header: React.FC<{ onOpenCashModal: () => void }> = ({ onOpenCashModal }) => {
-  const { activeView, setActiveView, metrics, cashRegister, sales } = usePharmacy();
+interface HeaderProps {
+  onOpenCashModal: () => void;
+  onOpenLoginModal: () => void;
+}
+
+export const Header: React.FC<HeaderProps> = ({ onOpenCashModal, onOpenLoginModal }) => {
+  const { activeView, setActiveView, metrics, cashRegister, sales, currentUser, currentTenant } = usePharmacy();
 
   const getTitle = () => {
     switch (activeView) {
+      case 'saas_admin':
+        return {
+          title: 'Panel Maestro SaaS (Super Admin)',
+          subtitle: 'Administración de boticas clientes, licencias y suscripciones'
+        };
+      case 'configuracion':
+        return {
+          title: 'Personalización de la Botica',
+          subtitle: `Identidad comercial, datos fiscales de ${currentTenant.nombreBotica} y ticket térmico`
+        };
       case 'pos':
         return {
           title: 'Punto de Venta (POS)',
-          subtitle: 'Dispensación rápida, búsqueda por principio activo y facturación'
+          subtitle: `Dispensación y facturación en ${currentTenant.nombreBotica}`
         };
       case 'vencimientos':
         return {
@@ -43,6 +58,11 @@ export const Header: React.FC<{ onOpenCashModal: () => void }> = ({ onOpenCashMo
           title: 'Gestión y Cuadre de Caja',
           subtitle: 'Apertura, egresos, arqueo de turno y balance en efectivo'
         };
+      default:
+        return {
+          title: 'FarmaControl ERP',
+          subtitle: 'Sistema de Gestión Farmacéutica'
+        };
     }
   };
 
@@ -55,10 +75,12 @@ export const Header: React.FC<{ onOpenCashModal: () => void }> = ({ onOpenCashMo
   const totalExpenses = cashRegister.gastos.reduce((acc, g) => acc + g.monto, 0);
   const currentCashInDrawer = cashRegister.saldoInicial + cashSalesToday - totalExpenses;
 
+  const isSuperAdmin = currentUser?.role === 'superadmin';
+
   return (
     <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0 z-10">
       <div>
-        <h1 className="text-lg font-bold text-slate-800 tracking-tight flex items-center gap-2">
+        <h1 className="text-base sm:text-lg font-bold text-slate-800 tracking-tight flex items-center gap-2">
           {title}
         </h1>
         <p className="text-xs text-slate-500 hidden sm:block">{subtitle}</p>
@@ -90,42 +112,64 @@ export const Header: React.FC<{ onOpenCashModal: () => void }> = ({ onOpenCashMo
           </button>
         )}
 
-        {/* Cash Drawer Status */}
-        <button
-          onClick={onOpenCashModal}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition cursor-pointer ${
-            cashRegister.estado === 'abierta'
-              ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
-              : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'
-          }`}
-          title="Ver arqueo de caja"
-        >
-          <Wallet className="w-3.5 h-3.5 text-emerald-600" />
-          <span className="flex items-center gap-1.5">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                cashRegister.estado === 'abierta' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'
-              }`}
-            ></span>
-            <span>{cashRegister.estado === 'abierta' ? 'Caja Abierta' : 'Caja Cerrada'}</span>
-          </span>
-          {cashRegister.estado === 'abierta' && (
-            <span className="font-semibold text-emerald-700 border-l border-emerald-200 pl-2">
-              {formatCurrency(currentCashInDrawer)}
+        {/* Cash Drawer Status (if in botica context) */}
+        {!isSuperAdmin && (
+          <button
+            onClick={onOpenCashModal}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition cursor-pointer ${
+              cashRegister.estado === 'abierta'
+                ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'
+            }`}
+            title="Ver arqueo de caja"
+          >
+            <Wallet className="w-3.5 h-3.5 text-emerald-600" />
+            <span className="flex items-center gap-1.5">
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  cashRegister.estado === 'abierta' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'
+                }`}
+              ></span>
+              <span className="hidden sm:inline">
+                {cashRegister.estado === 'abierta' ? 'Caja Abierta' : 'Caja Cerrada'}
+              </span>
             </span>
-          )}
-        </button>
+            {cashRegister.estado === 'abierta' && (
+              <span className="font-semibold text-emerald-700 border-l border-emerald-200 pl-2">
+                {formatCurrency(currentCashInDrawer)}
+              </span>
+            )}
+          </button>
+        )}
 
-        {/* User Badge */}
-        <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
-          <div className="w-8 h-8 rounded-full bg-emerald-800 text-white flex items-center justify-center font-bold text-xs shadow-sm ring-2 ring-emerald-500/20">
-            QF
+        {/* User Account / Role Trigger */}
+        <button
+          onClick={onOpenLoginModal}
+          className="flex items-center gap-2 pl-2 border-l border-slate-200 hover:opacity-85 transition cursor-pointer text-left"
+          title="Cambiar de usuario o rol"
+        >
+          <div
+            className={`w-8 h-8 rounded-full text-white flex items-center justify-center font-bold text-xs shadow-xs ring-2 ${
+              isSuperAdmin
+                ? 'bg-purple-800 ring-purple-500/20'
+                : 'bg-emerald-800 ring-emerald-500/20'
+            }`}
+          >
+            {isSuperAdmin ? 'SA' : 'QF'}
           </div>
-          <div className="hidden lg:block text-left text-xs leading-tight">
-            <p className="font-semibold text-slate-700">{cashRegister.responsable}</p>
-            <p className="text-[10px] text-slate-400">Regente Farmacéutico</p>
+          <div className="hidden lg:block leading-tight">
+            <p className="font-semibold text-slate-700 text-xs">
+              {currentUser ? currentUser.nombre : 'Iniciar Sesión'}
+            </p>
+            <p className="text-[10px] text-slate-400">
+              {isSuperAdmin
+                ? 'Super Administrador (Tú)'
+                : currentUser?.role === 'tenant_admin'
+                ? 'Dueño de Botica'
+                : 'Cajero / Mostrador'}
+            </p>
           </div>
-        </div>
+        </button>
       </div>
     </header>
   );

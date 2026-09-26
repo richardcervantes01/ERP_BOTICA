@@ -1,5 +1,34 @@
 export type ExpirationStatus = 'vencido' | 'critico' | 'proximo' | 'vigente';
 
+export type UserRole = 'superadmin' | 'tenant_admin' | 'cashier';
+
+export interface User {
+  id: string;
+  email: string;
+  password?: string;
+  nombre: string;
+  role: UserRole;
+  tenantId?: string;
+}
+
+export interface TenantSettings {
+  id: string;
+  nombreBotica: string;
+  ruc: string;
+  direccion: string;
+  telefono: string;
+  emailContacto: string;
+  regenteQF: string;
+  colegiaturaQF: string;
+  monedaSimbolo: string;
+  igvPorcentaje: number;
+  pieDeTicket: string;
+  plan: 'basico' | 'pro' | 'enterprise';
+  estadoLicencia: 'activa' | 'prueba' | 'suspendida' | 'vencida';
+  fechaVencimientoLicencia: string;
+  fechaRegistro: string;
+}
+
 export interface Product {
   id: string;
   codigo: string;

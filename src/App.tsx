@@ -9,13 +9,21 @@ import { SalesHistory } from './components/sales/SalesHistory';
 import { CustomerManager } from './components/customers/CustomerManager';
 import { Dashboard } from './components/dashboard/Dashboard';
 import { CashRegisterModal } from './components/cash/CashRegisterModal';
+import { TenantCustomization } from './components/settings/TenantCustomization';
+import { SaasAdminPortal } from './components/admin/SaasAdminPortal';
+import { LoginModal } from './components/auth/LoginModal';
 
 const AppContent: React.FC = () => {
   const { activeView } = usePharmacy();
   const [isCashModalOpen, setIsCashModalOpen] = useState(false);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
   const renderActiveView = () => {
     switch (activeView) {
+      case 'saas_admin':
+        return <SaasAdminPortal />;
+      case 'configuracion':
+        return <TenantCustomization />;
       case 'pos':
         return <PointOfSale />;
       case 'vencimientos':
@@ -60,12 +68,15 @@ const AppContent: React.FC = () => {
   return (
     <div className="flex h-screen bg-slate-100 font-sans text-slate-800 overflow-hidden">
       {/* Sidebar Navigation */}
-      <Sidebar />
+      <Sidebar onOpenLoginModal={() => setIsLoginModalOpen(true)} />
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col overflow-hidden">
         {/* Top Header */}
-        <Header onOpenCashModal={() => setIsCashModalOpen(true)} />
+        <Header
+          onOpenCashModal={() => setIsCashModalOpen(true)}
+          onOpenLoginModal={() => setIsLoginModalOpen(true)}
+        />
 
         {/* Dynamic Section View */}
         <div className="flex-1 flex flex-col overflow-hidden">
@@ -77,6 +88,12 @@ const AppContent: React.FC = () => {
       <CashRegisterModal
         isOpen={isCashModalOpen}
         onClose={() => setIsCashModalOpen(false)}
+      />
+
+      {/* Login & User Role Switcher Modal */}
+      <LoginModal
+        isOpen={isLoginModalOpen}
+        onClose={() => setIsLoginModalOpen(false)}
       />
     </div>
   );

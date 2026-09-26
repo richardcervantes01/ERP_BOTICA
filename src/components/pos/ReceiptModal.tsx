@@ -1,5 +1,6 @@
 import React, { useRef } from 'react';
 import { Sale } from '../../types/pharmacy';
+import { usePharmacy } from '../../context/PharmacyContext';
 import { Printer, Check, X, ShieldCheck } from 'lucide-react';
 import { formatCurrency, formatDateTimeSpanish, formatDateSpanish } from '../../utils/dateUtils';
 
@@ -9,6 +10,7 @@ interface ReceiptModalProps {
 }
 
 export const ReceiptModal: React.FC<ReceiptModalProps> = ({ sale, onClose }) => {
+  const { currentTenant } = usePharmacy();
   const receiptRef = useRef<HTMLDivElement>(null);
 
   if (!sale) return null;
@@ -53,10 +55,12 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ sale, onClose }) => 
           >
             {/* Header Botica */}
             <div className="text-center border-b border-dashed border-slate-300 pb-3 space-y-1">
-              <h2 className="font-bold text-sm tracking-wider uppercase text-slate-900">BOTICA FARMACONTROL</h2>
-              <p className="text-[10px] text-slate-600">RUC: 20601892341</p>
-              <p className="text-[10px] text-slate-600">Av. Aviación 2840, San Borja - Lima</p>
-              <p className="text-[10px] text-slate-600">Tel: (01) 480-1200 / Delivery Farmacia</p>
+              <h2 className="font-bold text-sm tracking-wider uppercase text-slate-900">
+                {currentTenant.nombreBotica}
+              </h2>
+              <p className="text-[10px] text-slate-600">RUC: {currentTenant.ruc}</p>
+              <p className="text-[10px] text-slate-600">{currentTenant.direccion}</p>
+              <p className="text-[10px] text-slate-600">Tel: {currentTenant.telefono}</p>
               <div className="inline-flex items-center gap-1 text-[10px] text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 mt-1">
                 <ShieldCheck className="w-3 h-3 text-emerald-600" />
                 <span>Establecimiento Farmacéutico Autorizado</span>
@@ -153,7 +157,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({ sale, onClose }) => 
 
             {/* Bottom Footer Regulatory Notice */}
             <div className="border-t border-dashed border-slate-300 pt-3 text-center space-y-1 text-[9px] text-slate-500">
-              <p className="font-semibold text-slate-700">¡GRACIAS POR SU PREFERENCIA!</p>
+              <p className="font-semibold text-slate-700">{currentTenant.pieDeTicket || '¡GRACIAS POR SU PREFERENCIA!'}</p>
               <p>Revisar su vuelto y medicamento antes de salir de mostrador.</p>
               <p>Medicamentos no admiten cambio ni devolución conforme a normativa sanitaria.</p>
               <div className="pt-1 text-[8px] font-mono text-slate-400">

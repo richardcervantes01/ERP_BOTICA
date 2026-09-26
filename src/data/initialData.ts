@@ -1,10 +1,73 @@
-import { Product, Customer, Sale, CashRegister, DisposalAct } from '../types/pharmacy';
+import { Product, Customer, Sale, CashRegister, DisposalAct, User, TenantSettings } from '../types/pharmacy';
 
 function getDateOffset(daysOffset: number): string {
   const d = new Date();
   d.setDate(d.getDate() + daysOffset);
   return d.toISOString().split('T')[0];
 }
+
+export const INITIAL_TENANTS: TenantSettings[] = [
+  {
+    id: 'tenant-1',
+    nombreBotica: 'FarmaControl - Botica San José',
+    ruc: '20601892341',
+    direccion: 'Av. Aviación 2840, San Borja - Lima',
+    telefono: '(01) 480-1200 / 984 512 890',
+    emailContacto: 'contacto@boticasanjose.pe',
+    regenteQF: 'Q.F. Fernando Ramos',
+    colegiaturaQF: 'CQFP 14209',
+    monedaSimbolo: 'S/',
+    igvPorcentaje: 18,
+    pieDeTicket: '¡Gracias por su preferencia! Verifique su medicina antes de retirarse de mostrador.',
+    plan: 'pro',
+    estadoLicencia: 'activa',
+    fechaVencimientoLicencia: getDateOffset(365),
+    fechaRegistro: getDateOffset(-60)
+  },
+  {
+    id: 'tenant-2',
+    nombreBotica: 'Botica & Salud Santa María',
+    ruc: '20789123451',
+    direccion: 'Calle Los Pinos 302, Miraflores',
+    telefono: '992 445 112',
+    emailContacto: 'administracion@santamariafarma.pe',
+    regenteQF: 'Q.F. Vanessa Paredes',
+    colegiaturaQF: 'CQFP 18502',
+    monedaSimbolo: 'S/',
+    igvPorcentaje: 18,
+    pieDeTicket: 'Salud y bienestar para su familia. Medicamentos refrigerados no tienen devolución.',
+    plan: 'basico',
+    estadoLicencia: 'activa',
+    fechaVencimientoLicencia: getDateOffset(90),
+    fechaRegistro: getDateOffset(-30)
+  }
+];
+
+export const INITIAL_USERS: User[] = [
+  {
+    id: 'user-admin',
+    email: 'admin@farmacontrol.com',
+    password: 'admin123',
+    nombre: 'Super Administrador (Tú - Dueño del SaaS)',
+    role: 'superadmin'
+  },
+  {
+    id: 'user-tenant-1',
+    email: 'demo@boticasanjose.pe',
+    password: 'botica123',
+    nombre: 'Dr. Carlos Mendoza (Dueño de Botica)',
+    role: 'tenant_admin',
+    tenantId: 'tenant-1'
+  },
+  {
+    id: 'user-cajero',
+    email: 'cajero@botica.pe',
+    password: 'caja123',
+    nombre: 'Téc. Lucía Gómez (Cajera Mostrador)',
+    role: 'cashier',
+    tenantId: 'tenant-1'
+  }
+];
 
 export const INITIAL_PRODUCTS: Product[] = [
   {

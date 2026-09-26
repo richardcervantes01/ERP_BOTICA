@@ -7,26 +7,59 @@ import {
   CashRegister,
   DisposalAct,
   TipoComprobante,
-  MetodoPago
+  MetodoPago,
+  User,
+  TenantSettings
 } from '../types/pharmacy';
 import {
   INITIAL_PRODUCTS,
   INITIAL_CUSTOMERS,
   INITIAL_SALES,
   INITIAL_CASH_REGISTER,
-  INITIAL_DISPOSAL_ACTS
+  INITIAL_DISPOSAL_ACTS,
+  INITIAL_TENANTS,
+  INITIAL_USERS
 } from '../data/initialData';
 import { getExpirationStatus } from '../utils/dateUtils';
 
+export type AppView =
+  | 'pos'
+  | 'dashboard'
+  | 'inventario'
+  | 'vencimientos'
+  | 'ventas'
+  | 'clientes'
+  | 'caja'
+  | 'configuracion'
+  | 'saas_admin';
+
 interface PharmacyContextType {
+  // Auth & Multi-tenant
+  currentUser: User | null;
+  users: User[];
+  tenants: TenantSettings[];
+  currentTenant: TenantSettings;
+  login: (email: string, pass: string) => { success: boolean; message?: string };
+  logout: () => void;
+  updateCurrentTenant: (updates: Partial<TenantSettings>) => void;
+  createTenant: (
+    tenantData: Omit<TenantSettings, 'id' | 'fechaRegistro'>,
+    adminUserData: { email: string; pass: string; name: string }
+  ) => void;
+  updateTenantLicense: (tenantId: string, updates: Partial<TenantSettings>) => void;
+  switchActiveTenant: (tenantId: string) => void;
+
+  // Navigation
+  activeView: AppView;
+  setActiveView: (view: AppView) => void;
+
+  // Domain data
   products: Product[];
   customers: Customer[];
   sales: Sale[];
   cart: CartItem[];
   cashRegister: CashRegister;
   disposalActs: DisposalAct[];
-  activeView: 'pos' | 'dashboard' | 'inventario' | 'vencimientos' | 'ventas' | 'clientes' | 'caja';
-  setActiveView: (view: 'pos' | 'dashboard' | 'inventario' | 'vencimientos' | 'ventas' | 'clientes' | 'caja') => void;
 
   // Cart operations
   addToCart: (product: Product, quantity?: number) => { success: boolean; message?: string };
@@ -97,9 +130,46 @@ interface PharmacyContextType {
 const PharmacyContext = createContext<PharmacyContextType | undefined>(undefined);
 
 export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [activeView, setActiveView] = useState<'pos' | 'dashboard' | 'inventario' | 'vencimientos' | 'ventas' | 'clientes' | 'caja'>('pos');
+  // Tenants & Users
+  const [tenants, setTenants] = useState<TenantSettings[]>(() => {
+    try {
+      const saved = localStorage.getItem('farmacontrol_tenants');
+      return saved ? JSON.parse(saved) : INITIAL_TENANTS;
+    } catch {
+      return INITIAL_TENANTS;
+    }
+  });
 
-  // Load from localStorage or fallback to initial
+  const [users, setUsers] = useState<User[]>(() => {
+    try {
+      const saved = localStorage.getItem('farmacontrol_users');
+      return saved ? JSON.parse(saved) : INITIAL_USERS;
+    } catch {
+      return INITIAL_USERS;
+    }
+  });
+
+  const [currentTenantId, setCurrentTenantId] = useState<string>(() => {
+    try {
+      return localStorage.getItem('farmacontrol_current_tenant_id') || 'tenant-1';
+    } catch {
+      return 'tenant-1';
+    }
+  });
+
+  // Current logged in user (default to tenant admin for easy demonstration)
+  const [currentUser, setCurrentUser] = useState<User | null>(() => {
+    try {
+      const saved = localStorage.getItem('farmacontrol_current_user');
+      return saved ? JSON.parse(saved) : INITIAL_USERS[1]; // Botica admin default
+    } catch {
+      return INITIAL_USERS[1];
+    }
+  });
+
+  const [activeView, setActiveView] = useState<AppView>('pos');
+
+  // Load products, customers, sales, cash
   const [products, setProducts] = useState<Product[]>(() => {
     try {
       const saved = localStorage.getItem('farmacontrol_products');
@@ -157,6 +227,42 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // Sync state to local storage
   useEffect(() => {
     try {
+      localStorage.setItem('farmacontrol_tenants', JSON.stringify(tenants));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [tenants]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('farmacontrol_users', JSON.stringify(users));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [users]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('farmacontrol_current_tenant_id', currentTenantId);
+    } catch (e) {
+      console.error(e);
+    }
+  }, [currentTenantId]);
+
+  useEffect(() => {
+    try {
+      if (currentUser) {
+        localStorage.setItem('farmacontrol_current_user', JSON.stringify(currentUser));
+      } else {
+        localStorage.removeItem('farmacontrol_current_user');
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem('farmacontrol_products', JSON.stringify(products));
     } catch (e) {
       console.error(e);
@@ -203,14 +309,102 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, [disposalActs]);
 
+  // Current active tenant
+  const currentTenant =
+    tenants.find(t => t.id === currentTenantId) || tenants[0] || INITIAL_TENANTS[0];
+
+  // Auth operations
+  const login = (email: string, pass: string): { success: boolean; message?: string } => {
+    const foundUser = users.find(
+      u => u.email.toLowerCase() === email.toLowerCase().trim() && u.password === pass
+    );
+
+    if (!foundUser) {
+      return { success: false, message: 'Correo o contraseña incorrectos.' };
+    }
+
+    // Check if tenant license is expired/suspended (if not superadmin)
+    if (foundUser.role !== 'superadmin' && foundUser.tenantId) {
+      const userTenant = tenants.find(t => t.id === foundUser.tenantId);
+      if (userTenant) {
+        if (userTenant.estadoLicencia === 'suspendida') {
+          return {
+            success: false,
+            message: 'Esta botica ha sido suspendida. Comuníquese con el administrador del SaaS.'
+          };
+        }
+        setCurrentTenantId(userTenant.id);
+      }
+    }
+
+    setCurrentUser(foundUser);
+    if (foundUser.role === 'superadmin') {
+      setActiveView('saas_admin');
+    } else {
+      setActiveView('pos');
+    }
+
+    return { success: true };
+  };
+
+  const logout = () => {
+    setCurrentUser(null);
+  };
+
+  const updateCurrentTenant = (updates: Partial<TenantSettings>) => {
+    setTenants(prev =>
+      prev.map(t => (t.id === currentTenant.id ? { ...t, ...updates } : t))
+    );
+  };
+
+  const createTenant = (
+    tenantData: Omit<TenantSettings, 'id' | 'fechaRegistro'>,
+    adminUserData: { email: string; pass: string; name: string }
+  ) => {
+    const newTenantId = `tenant-${Date.now()}`;
+    const newTenant: TenantSettings = {
+      ...tenantData,
+      id: newTenantId,
+      fechaRegistro: new Date().toISOString().split('T')[0]
+    };
+
+    const newAdminUser: User = {
+      id: `user-${Date.now()}`,
+      email: adminUserData.email,
+      password: adminUserData.pass,
+      nombre: adminUserData.name,
+      role: 'tenant_admin',
+      tenantId: newTenantId
+    };
+
+    setTenants(prev => [...prev, newTenant]);
+    setUsers(prev => [...prev, newAdminUser]);
+  };
+
+  const updateTenantLicense = (tenantId: string, updates: Partial<TenantSettings>) => {
+    setTenants(prev => prev.map(t => (t.id === tenantId ? { ...t, ...updates } : t)));
+  };
+
+  const switchActiveTenant = (tenantId: string) => {
+    const target = tenants.find(t => t.id === tenantId);
+    if (target) {
+      setCurrentTenantId(target.id);
+      setActiveView('pos');
+    }
+  };
+
   // Cart operations
   const addToCart = (product: Product, quantity = 1): { success: boolean; message?: string } => {
-    // Check if expired
     const status = getExpirationStatus(product.fechaVencimiento);
-    if (status === 'vencido' || product.estadoDisposicion === 'cuarentena' || product.estadoDisposicion === 'merma') {
+    if (
+      status === 'vencido' ||
+      product.estadoDisposicion === 'cuarentena' ||
+      product.estadoDisposicion === 'merma'
+    ) {
       return {
         success: false,
-        message: '¡BLOQUEO SANITARIO! Este medicamento está caducado o en cuarentena y su dispensación está terminantemente prohibida.'
+        message:
+          '¡BLOQUEO SANITARIO! Este medicamento está caducado o en cuarentena y su dispensación está prohibida.'
       };
     }
 
@@ -227,7 +421,7 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (currentQty + quantity > product.stock) {
         return {
           success: false,
-          message: `Stock máximo disponible alcanzado (${product.stock} unidades en existencia).`
+          message: `Stock máximo disponible alcanzado (${product.stock} unidades).`
         };
       }
       const updated = [...cart];
@@ -260,7 +454,7 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return;
     }
 
-    setCart(cart.map(c => c.product.id === productId ? { ...c, cantidad: quantity } : c));
+    setCart(cart.map(c => (c.product.id === productId ? { ...c, cantidad: quantity } : c)));
   };
 
   const removeFromCart = (productId: string) => {
@@ -271,8 +465,8 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setCart([]);
   };
 
-  const cartSubtotal = cart.reduce((acc, item) => acc + (item.product.precioVenta * item.cantidad), 0);
-  const cartTotal = cart.reduce((acc, item) => acc + (item.precioAplicado * item.cantidad), 0);
+  const cartSubtotal = cart.reduce((acc, item) => acc + item.product.precioVenta * item.cantidad, 0);
+  const cartTotal = cart.reduce((acc, item) => acc + item.precioAplicado * item.cantidad, 0);
   const cartDiscount = cartSubtotal - cartTotal;
 
   // Checkout sale
@@ -285,7 +479,12 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }): Sale => {
     const saleId = `sale-${Date.now()}`;
     const nextCorrelativoNum = sales.length + 143;
-    const prefix = params.tipoComprobante === 'boleta' ? 'B001' : params.tipoComprobante === 'factura' ? 'F001' : 'T001';
+    const prefix =
+      params.tipoComprobante === 'boleta'
+        ? 'B001'
+        : params.tipoComprobante === 'factura'
+        ? 'F001'
+        : 'T001';
     const correlativo = `${prefix}-${String(nextCorrelativoNum).padStart(6, '0')}`;
 
     const items = cart.map(item => ({
@@ -302,7 +501,8 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }));
 
     const totalAmount = Number(cartTotal.toFixed(2));
-    const igv = Number((totalAmount * 0.18 / 1.18).toFixed(2));
+    const taxRate = (currentTenant.igvPorcentaje || 18) / 100;
+    const igv = Number(((totalAmount * taxRate) / (1 + taxRate)).toFixed(2));
     const subtotal = Number((totalAmount - igv).toFixed(2));
 
     const newSale: Sale = {
@@ -319,8 +519,10 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       total: totalAmount,
       metodoPago: params.metodoPago,
       montoRecibido: params.montoRecibido || totalAmount,
-      vuelto: params.montoRecibido ? Math.max(0, Number((params.montoRecibido - totalAmount).toFixed(2))) : 0,
-      vendedor: params.vendedor || 'Q.F. Fernando Ramos (Coleg. 14209)',
+      vuelto: params.montoRecibido
+        ? Math.max(0, Number((params.montoRecibido - totalAmount).toFixed(2)))
+        : 0,
+      vendedor: params.vendedor || currentUser?.nombre || `${currentTenant.regenteQF} (${currentTenant.colegiaturaQF})`,
       estado: 'completada'
     };
 
@@ -362,7 +564,6 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const saleToAnnul = sales.find(s => s.id === saleId);
     if (!saleToAnnul || saleToAnnul.estado === 'anulada') return;
 
-    // Restore stock
     setProducts(prev => {
       return prev.map(p => {
         const item = saleToAnnul.items.find(i => i.productId === p.id);
@@ -455,7 +656,7 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       id: `acta-${Date.now()}`,
       numeroActa: `ACTA-BAJA-${new Date().getFullYear()}-${String(disposalActs.length + 5).padStart(3, '0')}`,
       fecha: new Date().toISOString().split('T')[0],
-      responsableQF: params.responsableQF || 'Q.F. Fernando Ramos (CQFP 14209)',
+      responsableQF: params.responsableQF || `${currentTenant.regenteQF} (${currentTenant.colegiaturaQF})`,
       motivo: params.motivo,
       productos: [
         {
@@ -471,7 +672,6 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       estado: 'ejecutada'
     };
 
-    // Deduct stock and set disposition
     setProducts(prev =>
       prev.map(p => {
         if (p.id === params.productId) {
@@ -490,7 +690,9 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   };
 
   // Customers
-  const addCustomer = (data: Omit<Customer, 'id' | 'comprasRealizadas' | 'totalGastado'>): Customer => {
+  const addCustomer = (
+    data: Omit<Customer, 'id' | 'comprasRealizadas' | 'totalGastado'>
+  ): Customer => {
     const newCust: Customer = {
       ...data,
       id: `cust-${Date.now()}`,
@@ -510,7 +712,11 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const addCashExpense = (motivo: string, monto: number, responsable: string) => {
     const expense = {
       id: `exp-${Date.now()}`,
-      hora: new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit', hour12: true }),
+      hora: new Date().toLocaleTimeString('es-PE', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      }),
       motivo,
       monto,
       responsable
@@ -545,12 +751,11 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setCart([]);
     setCashRegister(INITIAL_CASH_REGISTER);
     setDisposalActs(INITIAL_DISPOSAL_ACTS);
-    localStorage.removeItem('farmacontrol_products');
-    localStorage.removeItem('farmacontrol_customers');
-    localStorage.removeItem('farmacontrol_sales');
-    localStorage.removeItem('farmacontrol_cart');
-    localStorage.removeItem('farmacontrol_cash');
-    localStorage.removeItem('farmacontrol_disposals');
+    setTenants(INITIAL_TENANTS);
+    setUsers(INITIAL_USERS);
+    setCurrentTenantId('tenant-1');
+    setCurrentUser(INITIAL_USERS[1]);
+    localStorage.clear();
   };
 
   // Metrics
@@ -586,14 +791,24 @@ export const PharmacyProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   return (
     <PharmacyContext.Provider
       value={{
+        currentUser,
+        users,
+        tenants,
+        currentTenant,
+        login,
+        logout,
+        updateCurrentTenant,
+        createTenant,
+        updateTenantLicense,
+        switchActiveTenant,
+        activeView,
+        setActiveView,
         products,
         customers,
         sales,
         cart,
         cashRegister,
         disposalActs,
-        activeView,
-        setActiveView,
         addToCart,
         updateCartQuantity,
         removeFromCart,
